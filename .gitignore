@@ -1,0 +1,43 @@
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Next.js / Node.js
+node_modules/
+.next/
+out/
+dist/
+*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# RAG generated data
+backend/chatbot/data/chunks/
+backend/chatbot/vector_store/
+
+# Raw datasets
+backend/chatbot/data/raw/
+
+# Source PDFs / knowledge documents
+backend/chatbot/data/pdfs/
+
+

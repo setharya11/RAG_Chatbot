@@ -1,0 +1,9 @@
+# Optional: conda env with a Node version compatible with Next.js 14+
+#   conda env create -f environment.yml
+#   conda activate rag-chatbot-web
+name: rag-chatbot-web
+channels:
+  - conda-forge
+dependencies:
+  - nodejs>=20
+  - npm>=10
