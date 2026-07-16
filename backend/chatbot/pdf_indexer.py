@@ -2,8 +2,8 @@ import os
 # pyrefly: ignore [missing-import]
 from pypdf import PdfReader
 
-from embedding_server import generate_embedding
-from pg_vector_store import insert_chunk
+from chatbot.embedding_server import generate_embedding
+from chatbot.pg_vector_store import insert_chunk
 
 
 PDF_DIR = "data/pdfs"

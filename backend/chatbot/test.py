@@ -1,4 +1,4 @@
-from embedding_server import generate_embedding
+from chatbot.embedding_server import generate_embedding
 
 text = "What is Artificial Intelligence?"
 

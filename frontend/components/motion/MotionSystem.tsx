@@ -12,9 +12,18 @@ interface RevealTextProps {
 
 export function RevealText({ children, className = "", delay = 0 }: RevealTextProps) {
   return (
-    <div className={`overflow-hidden ${className}`}>
+    <span
+      className={`overflow-hidden ${className}`}
+      style={{
+        display: "block",
+        paddingTop: "0.15em",
+        paddingBottom: "0.15em",
+        marginTop: "-0.15em",
+        marginBottom: "-0.15em",
+      }}
+    >
       <motion.span
-        style={{ display: "inline-block" }}
+        style={{ display: "inline-block", verticalAlign: "top" }}
         initial={{ y: "100%", opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{
@@ -25,7 +34,7 @@ export function RevealText({ children, className = "", delay = 0 }: RevealTextPr
       >
         {children}
       </motion.span>
-    </div>
+    </span>
   );
 }
 

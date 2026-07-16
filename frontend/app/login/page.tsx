@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState, Suspense } from "react";
 import { PageTransition, RevealText } from "@/components/motion/MotionSystem";
 import { ApiKeySetupNotice } from "@/components/ApiKeySetupNotice";
 import { PasswordInput } from "@/components/PasswordInput";
+import DotField from "@/components/DotField";
 import {
   apiJson,
   apiErrorMessage,
@@ -132,7 +133,7 @@ function LoginForm() {
           />
 
           <label className="row-check">
-            <input name="remember_me" type="checkbox" /> Remember me (longer session)
+            <input name="remember_me" type="checkbox" /> Remember me
           </label>
 
           <div style={{ marginBottom: "1rem", textAlign: "right" }}>
@@ -169,20 +170,67 @@ export default function LoginPage() {
 
   return (
     <PageTransition>
-      <main className="auth-page">
-        <div className="auth-inner">
-          {!hasKey && <ApiKeySetupNotice scenario="missing-frontend-env" />}
+      <main className="auth-page" style={{ overflow: "hidden" }}>
+        {/* Background Dot Grid */}
+        <div style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 0, opacity: 0.75, overflow: "hidden" }}>
+          <DotField
+            dotRadius={2.0}
+            dotSpacing={26}
+            bulgeStrength={80}
+            glowRadius={220}
+            sparkle={false}
+            waveAmplitude={0}
+            gradientFrom="rgba(59, 130, 246, 0.65)"
+            gradientTo="rgba(99, 102, 241, 0.35)"
+            glowColor="rgba(59, 130, 246, 0.3)"
+          />
+        </div>
 
-          <div className="auth-logo">
-            <span className="auth-logo-mark" aria-hidden="true">
-              ◆
-            </span>
-            <span>RAG Chatbot</span>
+        <div className="auth-split-container">
+          {/* Welcome Panel */}
+          <div className="auth-welcome-panel">
+            <div className="auth-welcome-content">
+              <div className="auth-logo" style={{ marginBottom: "2rem" }}>
+                <span className="auth-logo-mark" aria-hidden="true">
+                  ◆
+                </span>
+                <span>RAG Chatbot</span>
+              </div>
+              <h1 className="auth-welcome-title">
+                Welcome to <br />
+                <span style={{ background: "linear-gradient(135deg, #3b82f6, #818cf8)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                  AI History Tutor
+                </span>
+              </h1>
+              <p className="auth-welcome-text">
+                Your dedicated History teacher. Grounded directly in textbooks to guide you through civilizations, timelines, key battles, and historical causes.
+              </p>
+              <div className="auth-welcome-features">
+                <div className="auth-feature-item">
+                  <span className="auth-feature-icon" style={{ color: "#3b82f6" }}>✓</span>
+                  <span>Strictly grounded textbook facts (no hallucinations)</span>
+                </div>
+                <div className="auth-feature-item">
+                  <span className="auth-feature-icon" style={{ color: "#3b82f6" }}>✓</span>
+                  <span>Vertical timeline & Markdown comparison generators</span>
+                </div>
+                <div className="auth-feature-item">
+                  <span className="auth-feature-icon" style={{ color: "#3b82f6" }}>✓</span>
+                  <span>Audio transcription and PDF vector indexing</span>
+                </div>
+              </div>
+            </div>
           </div>
 
-          <Suspense fallback={<div className="auth-card">Loading login…</div>}>
-            <LoginForm />
-          </Suspense>
+          {/* Form Panel */}
+          <div className="auth-form-panel">
+            <div className="auth-inner">
+              {!hasKey && <ApiKeySetupNotice scenario="missing-frontend-env" />}
+              <Suspense fallback={<div className="auth-card">Loading login…</div>}>
+                <LoginForm />
+              </Suspense>
+            </div>
+          </div>
         </div>
       </main>
     </PageTransition>

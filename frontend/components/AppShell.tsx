@@ -110,6 +110,59 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setReady(true);
   }, [router, pathname, urlSessionId]);
 
+  const handleRenameItem = async (index: number, newTitle: string) => {
+    const chat = history[index];
+    if (!chat) return;
+
+    try {
+      const res = await fetch(`${API_BASE}/chats/session/${chat.id}/title`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ title: newTitle }),
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to rename chat session");
+      }
+
+      setHistory((prev) =>
+        prev.map((c, i) => (i === index ? { ...c, title: newTitle } : c))
+      );
+    } catch (err) {
+      console.error(err);
+      alert("Error: Could not rename chat history");
+    }
+  };
+
+  const handleDeleteItem = async (index: number) => {
+    const chat = history[index];
+    if (!chat) return;
+
+    const confirmed = window.confirm(`Are you sure you want to delete "${chat.title}"?`);
+    if (!confirmed) return;
+
+    try {
+      const res = await fetch(`${API_BASE}/chats/session/${chat.id}`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to delete chat session");
+      }
+
+      setHistory((prev) => prev.filter((_, i) => i !== index));
+
+      if (String(chat.id) === String(urlSessionId)) {
+        router.replace("/dashboard?session_id=new");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error: Could not delete chat history");
+    }
+  };
+
   function logout() {
     clearAuthSession();
     router.replace("/login");
@@ -255,6 +308,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         router.replace(`/dashboard?session_id=${selectedChat.id}`);
                       }
                     }}
+                    onRenameItem={handleRenameItem}
+                    onDeleteItem={handleDeleteItem}
                     accentColor="var(--accent)"
                     textColor="rgba(255, 255, 255, 0.45)"
                     markerColor="rgba(255, 255, 255, 0.15)"

@@ -11,10 +11,17 @@ import MagicBento from "@/components/MagicBento";
 import DotField from "@/components/DotField";
 import { getUserSnapshot } from "@/lib/auth-storage";
 
+type ChatAttachment = {
+  filename: string;
+  mime_type: string;
+  file_id: string;
+};
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
+  attachments?: ChatAttachment[];
 };
 
 const API_BASE = "http://127.0.0.1:8000";
@@ -51,6 +58,109 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<number | null>(null);
   const skipFetchRef = useRef(false);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const [attachedPreviews, setAttachedPreviews] = useState<{ 
+    id: string; 
+    name: string; 
+    type: "image" | "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "text" | "csv" | "audio" | "video" | "archive" | "code"; 
+    url: string;
+    sizeStr: string;
+  }[]>([]);
+  const [uploadingStatus, setUploadingStatus] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      attachedPreviews.forEach((preview) => {
+        if (preview.type === "image" && preview.url) {
+          URL.revokeObjectURL(preview.url);
+        }
+      });
+    };
+  }, [attachedPreviews]);
+
+  function formatBytes(bytes: number, decimals = 1) {
+    if (!bytes) return "0 Bytes";
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ["Bytes", "KB", "MB", "GB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + " " + sizes[i];
+  }
+
+  const handleAttachmentChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+
+    const fileList = Array.from(files);
+    const newFiles = [...attachedFiles];
+    const newPreviews = [...attachedPreviews];
+
+    fileList.forEach((file) => {
+      if (newFiles.some((f) => f.name === file.name && f.size === file.size)) return;
+
+      const type = file.type;
+      const isImage = type.startsWith("image/") || file.name.toLowerCase().endsWith(".webp");
+      const nameLower = file.name.toLowerCase();
+      const sizeStr = formatBytes(file.size);
+
+      if (isImage) {
+        newFiles.push(file);
+        const url = URL.createObjectURL(file);
+        newPreviews.push({
+          id: `${file.name}-${file.size}`,
+          name: file.name,
+          type: "image",
+          url,
+          sizeStr,
+        });
+      } else {
+        let docType: "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "text" | "csv" | "audio" | "video" | "archive" | "code" | null = null;
+        if (nameLower.endsWith(".pdf")) docType = "pdf";
+        else if (nameLower.endsWith(".doc")) docType = "doc";
+        else if (nameLower.endsWith(".docx")) docType = "docx";
+        else if (nameLower.endsWith(".xls")) docType = "xls";
+        else if (nameLower.endsWith(".xlsx")) docType = "xlsx";
+        else if (nameLower.endsWith(".ppt")) docType = "ppt";
+        else if (nameLower.endsWith(".pptx")) docType = "pptx";
+        else if (nameLower.endsWith(".csv")) docType = "csv";
+        else if (nameLower.endsWith(".zip") || nameLower.endsWith(".tar") || nameLower.endsWith(".gz")) docType = "archive";
+        else if (nameLower.endsWith(".json") || nameLower.endsWith(".xml") || nameLower.endsWith(".html") || nameLower.endsWith(".js") || nameLower.endsWith(".ts")) docType = "code";
+        else if (nameLower.endsWith(".txt") || nameLower.endsWith(".log") || nameLower.endsWith(".md") || nameLower.endsWith(".rtf")) docType = "text";
+        else if (nameLower.endsWith(".wav") || nameLower.endsWith(".mp3") || nameLower.endsWith(".m4a")) docType = "audio";
+        else if (nameLower.endsWith(".mp4")) docType = "video";
+
+        if (docType) {
+          newFiles.push(file);
+          newPreviews.push({
+            id: `${file.name}-${file.size}`,
+            name: file.name,
+            type: docType,
+            url: "",
+            sizeStr,
+          });
+        } else {
+          alert(`Unsupported file format: ${file.name}. Supported formats: PDF, Word, Excel, PowerPoint, Text, CSV, code files, archives, images, and audio/video.`);
+        }
+      }
+    });
+
+    setAttachedFiles(newFiles);
+    setAttachedPreviews(newPreviews);
+
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const removeAttachment = (id: string, index: number) => {
+    const preview = attachedPreviews[index];
+    if (preview && preview.type === "image" && preview.url) {
+      URL.revokeObjectURL(preview.url);
+    }
+    setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
+    setAttachedPreviews((prev) => prev.filter((_, i) => i !== index));
+  };
 
   // const scrollToBottom = useCallback(() => {
   //   queueMicrotask(() => {
@@ -96,7 +206,8 @@ export default function DashboardPage() {
             oldMessages.map((m: any) => ({
               id: String(m.id),
               role: m.role,
-              text: m.content,
+              text: m.text || "",
+              attachments: m.attachments || [],
             }))
           );
         }
@@ -119,23 +230,132 @@ export default function DashboardPage() {
     if (e) e.preventDefault();
 
     const q = input.trim();
-    if (!q || loading) return;
+    if ((!q && attachedFiles.length === 0) || loading) return;
 
-    const userMsg: ChatMessage = {
-      id: `u-${crypto.randomUUID()}`,
-      role: "user",
-      text: q,
-    };
-
-    setMessages((prev) => [...prev, userMsg]);
-    setInput("");
     setLoading(true);
-    // scrollToBottom();
+    setInput("");
 
+    let uploadErrors: string[] = [];
+    let activeSessionId = urlSessionId && urlSessionId !== "new"
+      ? Number(urlSessionId)
+      : null;
+
+    const userSnapshot = getUserSnapshot();
+    const currentUserId = userSnapshot?.user_id || 1;
+
+    // 1. Initialize chat session if new and files are attached
+    if (!activeSessionId && attachedFiles.length > 0) {
+      setUploadingStatus("Initializing chat...");
+      try {
+        const initRes = await fetch(`${API_BASE}/chats/session/create`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            user_id: currentUserId,
+            title: q.substring(0, 40) || "New Chat",
+          }),
+        });
+        if (!initRes.ok) throw new Error("Failed to initialize chat session");
+        const initData = await initRes.json();
+        if (initData.session_id) {
+          activeSessionId = initData.session_id;
+          setCurrentSessionId(activeSessionId);
+          skipFetchRef.current = true;
+          router.replace(`/dashboard?session_id=${activeSessionId}`);
+        }
+      } catch (err: any) {
+        console.error(err);
+        alert(`Could not start chat: ${err.message}`);
+        setLoading(false);
+        setUploadingStatus(null);
+        return;
+      }
+    }
+
+    const attachmentPayloads: { filename: string; mime_type: string; file_id: string }[] = [];
+
+    // 2. Upload attachments sequentially
     try {
-      const userSnapshot = getUserSnapshot();
-      const currentUserId = userSnapshot?.user_id || 1;
+      if (attachedFiles.length > 0) {
+        setUploadingStatus("Uploading files...");
+        for (const file of attachedFiles) {
+          const isImage = file.type.startsWith("image/") || file.name.toLowerCase().endsWith(".webp");
+          
+          try {
+            const formData = new FormData();
+            formData.append("file", file);
+            if (activeSessionId) {
+              formData.append("session_id", String(activeSessionId));
+            }
+            
+            if (!isImage) {
+              setUploadingStatus(`Indexing file: ${file.name}...`);
+              const res = await fetch(`${API_BASE}/chats/upload`, {
+                method: "POST",
+                body: formData,
+              });
+              if (!res.ok) throw new Error(`Failed to index ${file.name}`);
+              const data = await res.json();
+              if (!data.success) {
+                throw new Error(data.error || `Could not index file: ${file.name}`);
+              }
+              attachmentPayloads.push({
+                filename: file.name,
+                mime_type: file.type || "application/octet-stream",
+                file_id: data.file_id || `session_${activeSessionId}_${file.name}`
+              });
+            } else {
+              setUploadingStatus(`Uploading image: ${file.name}...`);
+              const res = await fetch(`${API_BASE}/chats/upload-image`, {
+                method: "POST",
+                body: formData,
+              });
+              if (!res.ok) throw new Error(`Failed to upload ${file.name}`);
+              const data = await res.json();
+              if (data.success && data.url) {
+                attachmentPayloads.push({
+                  filename: file.name,
+                  mime_type: file.type || "image/png",
+                  file_id: data.url
+                });
+              } else {
+                throw new Error(`Could not upload image: ${file.name}`);
+              }
+            }
+          } catch (err: any) {
+            console.error(err);
+            uploadErrors.push(err.message || String(err));
+          }
+        }
+        
+        attachedPreviews.forEach((preview) => {
+          if (preview.type === "image" && preview.url) {
+            URL.revokeObjectURL(preview.url);
+          }
+        });
+        setAttachedFiles([]);
+        setAttachedPreviews([]);
+        setUploadingStatus(null);
+      }
 
+      if (uploadErrors.length > 0) {
+        alert(`Some files failed to process:\n${uploadErrors.join("\n")}`);
+      }
+
+      const promptText = q || (attachmentPayloads.length > 0 ? `Sent ${attachmentPayloads.length} attachment(s)` : "");
+
+      const userMsg: ChatMessage = {
+        id: `u-${crypto.randomUUID()}`,
+        role: "user",
+        text: promptText,
+        attachments: attachmentPayloads,
+      };
+
+      setMessages((prev) => [...prev, userMsg]);
+
+      // 3. Submit instruction and attachment mappings separately
       const res = await fetch(`${API_BASE}/chats/send`, {
         method: "POST",
         headers: {
@@ -143,10 +363,9 @@ export default function DashboardPage() {
         },
         body: JSON.stringify({
           user_id: currentUserId,
-          message: q,
-          session_id: urlSessionId && urlSessionId !== "new"
-            ? Number(urlSessionId)
-            : null,
+          message: promptText,
+          session_id: activeSessionId,
+          attachments: attachmentPayloads,
         }),
       });
 
@@ -181,8 +400,159 @@ export default function DashboardPage() {
       ]);
     } finally {
       setLoading(false);
-      // scrollToBottom();
+      setUploadingStatus(null);
     }
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      const mockEvent = {
+        target: { files }
+      } as unknown as React.ChangeEvent<HTMLInputElement>;
+      handleAttachmentChange(mockEvent);
+    }
+  };
+
+  function renderFileIcon(filename: string, size = 18) {
+    const nameLower = filename.toLowerCase();
+    if (nameLower.endsWith(".pdf")) {
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.5">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+        </svg>
+      );
+    }
+    if (nameLower.endsWith(".doc") || nameLower.endsWith(".docx") || nameLower.endsWith(".rtf")) {
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="2.5">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+        </svg>
+      );
+    }
+    if (nameLower.endsWith(".xls") || nameLower.endsWith(".xlsx") || nameLower.endsWith(".csv")) {
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2.5">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+        </svg>
+      );
+    }
+    if (nameLower.endsWith(".ppt") || nameLower.endsWith(".pptx")) {
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#f97316" strokeWidth="2.5">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+        </svg>
+      );
+    }
+    if (nameLower.endsWith(".zip") || nameLower.endsWith(".tar") || nameLower.endsWith(".gz")) {
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#a855f7" strokeWidth="2.5">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+        </svg>
+      );
+    }
+    if (nameLower.endsWith(".png") || nameLower.endsWith(".jpg") || nameLower.endsWith(".jpeg") || nameLower.endsWith(".webp")) {
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#ec4899" strokeWidth="2.5">
+          <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+          <circle cx="8.5" cy="8.5" r="1.5" />
+          <polyline points="21 15 16 10 5 21" />
+        </svg>
+      );
+    }
+    return (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#6b7280" strokeWidth="2.5">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <polyline points="14 2 14 8 20 8" />
+      </svg>
+    );
+  }
+
+  function getFileTypeLabel(filename: string) {
+    const ext = filename.split('.').pop()?.toUpperCase() || "";
+    return ext ? `${ext} Document` : "Document";
+  }
+
+  function renderMessageText(content: string) {
+    const regex = /\[(IMAGE|Indexed):\s*([^\]]+)\]/g;
+    const parts = [];
+    let lastIndex = 0;
+    let match;
+
+    while ((match = regex.exec(content)) !== null) {
+      const textPart = content.substring(lastIndex, match.index);
+      if (textPart) {
+        parts.push(
+          <ReactMarkdown key={`text-${lastIndex}`} remarkPlugins={[remarkGfm]}>
+            {textPart}
+          </ReactMarkdown>
+        );
+      }
+      const type = match[1];
+      const val = match[2];
+
+      if (type === "IMAGE") {
+        const fullUrl = val.startsWith("http") ? val : `${API_BASE}${val}`;
+        parts.push(
+          <div key={`img-${match.index}`} className="chat-bubble__image-container">
+            <img
+              src={fullUrl}
+              alt="Attached image"
+              className="chat-bubble__img"
+              onClick={() => window.open(fullUrl, "_blank")}
+            />
+          </div>
+        );
+      } else if (type === "Indexed") {
+        parts.push(
+          <div key={`file-${match.index}`} style={{ display: "block", marginTop: "6px", marginBottom: "4px" }}>
+            <div className="chat-bubble__file-chip" style={{ display: "inline-flex", background: "rgba(255, 255, 255, 0.05)", padding: "6px 12px", borderRadius: "8px", border: "1px solid rgba(255, 255, 255, 0.08)", gap: "8px", alignItems: "center" }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+              <span style={{ fontSize: "0.82rem", color: "rgba(255,255,255,0.85)" }}>{val}</span>
+            </div>
+          </div>
+        );
+      }
+      lastIndex = regex.lastIndex;
+    }
+
+    const remainingText = content.substring(lastIndex);
+    if (remainingText) {
+      parts.push(
+        <ReactMarkdown key={`text-${lastIndex}`} remarkPlugins={[remarkGfm]}>
+          {remainingText}
+        </ReactMarkdown>
+      );
+    }
+
+    if (parts.length === 0) {
+      return (
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          {content}
+        </ReactMarkdown>
+      );
+    }
+
+    return <div className="chat-bubble__content-wrapper">{parts}</div>;
   }
 
   return (
@@ -232,10 +602,21 @@ export default function DashboardPage() {
                         : "chat-bubble chat-bubble--assistant"
                     }
                   >
+                    {m.role === "user" && m.attachments && m.attachments.length > 0 && (
+                      <div className="chat-bubble__attachments-row" style={{ display: "flex", flexWrap: "wrap", gap: "10px", marginBottom: "8px", justifyContent: "flex-end" }}>
+                        {m.attachments.map((att) => (
+                          <div key={att.file_id} className="chat-bubble__attachment-card" style={{ display: "inline-flex", background: "rgba(255, 255, 255, 0.05)", padding: "8px 12px", borderRadius: "10px", border: "1px solid rgba(255, 255, 255, 0.08)", gap: "10px", alignItems: "center", minWidth: "150px" }}>
+                            {renderFileIcon(att.filename)}
+                            <div style={{ display: "flex", flexDirection: "column" }}>
+                              <span style={{ fontSize: "0.85rem", color: "var(--text-soft)", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "160px" }}>{att.filename}</span>
+                              <span style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.4)" }}>{getFileTypeLabel(att.filename)}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     <div className="chat-bubble__text markdown-content">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {m.text}
-                      </ReactMarkdown>
+                      {renderMessageText(m.text)}
                     </div>
                   </motion.li>
                 ))}
@@ -251,7 +632,7 @@ export default function DashboardPage() {
                       Assistant
                     </span>
                     <p className="chat-bubble__text">
-                      Thinking...
+                      {uploadingStatus || "Thinking..."}
                     </p>
                   </motion.li>
                 )}
@@ -260,12 +641,86 @@ export default function DashboardPage() {
           </div>
 
           {urlSessionId !== null && (
-            <form className="chat-composer" onSubmit={sendQuestion}>
+            <form 
+              className={`chat-composer ${isDragging ? "chat-composer--dragging" : ""}`}
+              onSubmit={(e) => { e.preventDefault(); void sendQuestion(); }}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              style={{ position: "relative" }}
+            >
+              {isDragging && (
+                <div className="chat-composer__dropzone-overlay" style={{ position: "absolute", inset: 0, background: "rgba(59, 130, 246, 0.12)", border: "2px dashed var(--accent)", borderRadius: "14px", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10, backdropFilter: "blur(4px)", pointerEvents: "none" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "8px", color: "var(--accent)" }}>
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="17 8 12 3 7 8" />
+                      <line x1="12" y1="3" x2="12" y2="15" />
+                    </svg>
+                    <span style={{ fontSize: "0.9rem", fontWeight: 600 }}>Drop your files here</span>
+                  </div>
+                </div>
+              )}
+
               <label htmlFor={inputId} className="sr-only">
                 Your question
               </label>
 
+              {/* ATTACHMENT PREVIEWS DRAWER */}
+              {attachedPreviews.length > 0 && (
+                <div className="chat-composer__previews" style={{ display: "flex", flexWrap: "nowrap", overflowX: "auto", gap: "12px", padding: "8px 12px", background: "rgba(0,0,0,0.15)", borderTopLeftRadius: "14px", borderTopRightRadius: "14px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+                  {attachedPreviews.map((preview, idx) => (
+                    <div key={preview.id} className="chat-composer__preview-chip" style={{ display: "flex", flexShrink: 0, alignItems: "center", gap: "10px", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "10px", padding: "8px 12px", position: "relative", minWidth: "180px", maxWidth: "240px" }}>
+                      {preview.type === "image" ? (
+                        <div style={{ width: "32px", height: "32px", borderRadius: "6px", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.02)" }}>
+                          <img src={preview.url} alt={preview.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        </div>
+                      ) : (
+                        <div style={{ width: "32px", height: "32px", borderRadius: "6px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          {renderFileIcon(preview.name, 22)}
+                        </div>
+                      )}
+                      <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
+                        <span style={{ fontSize: "0.85rem", color: "var(--text-soft)", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{preview.name}</span>
+                        <span style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.4)" }}>{preview.sizeStr}</span>
+                      </div>
+                      <button
+                        type="button"
+                        className="chat-composer__preview-remove"
+                        onClick={() => removeAttachment(preview.id, idx)}
+                        title="Remove attachment"
+                        style={{ background: "none", border: "none", color: "rgba(255,255,255,0.4)", cursor: "pointer", fontSize: "0.8rem", padding: "2px" }}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <div className="chat-composer__field">
+                {/* ATTACHMENT BUTTON */}
+                <button
+                  type="button"
+                  className="chat-composer__attachment-btn"
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Attach files (PDF, images, DOCX, TXT, CSV, Audio)"
+                  disabled={loading}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                  </svg>
+                </button>
+
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  style={{ display: "none" }}
+                  multiple
+                  accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.csv,.docx,.wav,.mp3,.mp4,.zip,.doc,.xls,.xlsx,.ppt,.pptx,.rtf,.md,.json,.xml,.html"
+                  onChange={handleAttachmentChange}
+                />
+
                 <textarea
                   id={inputId}
                   className="chat-composer__input"
@@ -283,7 +738,7 @@ export default function DashboardPage() {
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
-                      sendQuestion();
+                      void sendQuestion();
                     }
                   }}
                 />
@@ -291,6 +746,7 @@ export default function DashboardPage() {
                 <button
                   type="submit"
                   className="chat-composer__send primary"
+                  disabled={loading || (!input.trim() && attachedFiles.length === 0)}
                 >
                   ↑
                 </button>

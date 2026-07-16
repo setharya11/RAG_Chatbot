@@ -124,46 +124,47 @@ def search_chunks(query_embedding, top_k=5):
     finally:
         cur.close()
         conn.close()
-def get_connection():
-    conn = psycopg2.connect(DB_URL)
-    register_vector(conn)
-    return conn
 
 
-def insert_chunk(content, embedding):
+def search_chunks_with_scores(query_embedding, top_k=5, allowed_sources=None, exclude_user_uploads=False):
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute(
+    try:
+        sql = """
+            SELECT content, embedding <=> %s::vector AS distance
+            FROM document_chunks
         """
-        INSERT INTO document_chunks (content, embedding)
-        VALUES (%s, %s)
-        """,
-        (content, embedding)
-    )
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
-def search_chunks(query_embedding, top_k=5):
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute(
+        conditions = []
+        params = [query_embedding]
+        
+        if allowed_sources:
+            or_conds = []
+            for src in allowed_sources:
+                or_conds.append("content LIKE %s")
+                params.append(f"Source: {src}%")
+            conditions.append("(" + " OR ".join(or_conds) + ")")
+        elif exclude_user_uploads:
+            conditions.append("content NOT LIKE 'Source: session_%'")
+            
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+            
+        sql += """
+            ORDER BY distance ASC
+            LIMIT %s
         """
-        SELECT content
-        FROM document_chunks
-        ORDER BY embedding <=> %s::vector
-        LIMIT %s
-        """,
-        (query_embedding, top_k)
-    )
+        params.append(top_k)
 
-    results = [row[0] for row in cur.fetchall()]
+        cur.execute(sql, tuple(params))
 
-    cur.close()
-    conn.close()
+        results = [
+            (row[0], float(row[1]))
+            for row in cur.fetchall()
+        ]
 
-    return results
+        return results
+
+    finally:
+        cur.close()
+        conn.close()

@@ -28,6 +28,8 @@ interface LineSidebarProps {
   smoothing?: number;
   defaultActive?: number | null;
   onItemClick?: (index: number, label: string) => void;
+  onRenameItem?: (index: number, newTitle: string) => Promise<void> | void;
+  onDeleteItem?: (index: number) => Promise<void> | void;
   className?: string;
 }
 
@@ -50,6 +52,8 @@ const LineSidebar: React.FC<LineSidebarProps> = ({
   smoothing = 100,
   defaultActive = null,
   onItemClick,
+  onRenameItem,
+  onDeleteItem,
   className = ''
 }) => {
   const listRef = useRef<HTMLUListElement | null>(null);
@@ -61,6 +65,10 @@ const LineSidebar: React.FC<LineSidebarProps> = ({
   const activeRef = useRef<number | null>(defaultActive);
   const smoothingRef = useRef<number>(smoothing);
   const [activeIndex, setActiveIndex] = useState<number | null>(defaultActive);
+
+  // States for renaming feature
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editValue, setEditValue] = useState("");
 
   activeRef.current = activeIndex;
   smoothingRef.current = smoothing;
@@ -127,11 +135,26 @@ const LineSidebar: React.FC<LineSidebarProps> = ({
 
   const handleClick = useCallback(
     (index: number, label: string) => {
+      // Don't trigger navigation if currently editing this item
+      if (editingIndex === index) return;
       setActiveIndex(index);
       onItemClick?.(index, label);
     },
-    [onItemClick]
+    [onItemClick, editingIndex]
   );
+
+  const handleStartEdit = (index: number, label: string) => {
+    setEditingIndex(index);
+    setEditValue(label);
+  };
+
+  const handleSave = async (index: number) => {
+    const val = editValue.trim();
+    if (val && onRenameItem) {
+      await onRenameItem(index, val);
+    }
+    setEditingIndex(null);
+  };
 
   useEffect(() => {
     startLoop();
@@ -162,23 +185,105 @@ const LineSidebar: React.FC<LineSidebarProps> = ({
       }}
     >
       <ul ref={listRef} className="line-sidebar__list" onPointerMove={handlePointerMove} onPointerLeave={handlePointerLeave}>
-        {items.map((label, index) => (
-          <li
-            key={`${label}-${index}`}
-            ref={el => {
-              itemRefs.current[index] = el;
-            }}
-            className="line-sidebar__item"
-            aria-current={activeIndex === index ? 'true' : undefined}
-            onClick={() => handleClick(index, label)}
-          >
-            {showMarker && <span className="line-sidebar__marker" aria-hidden="true" />}
-            <span className="line-sidebar__label">
-              {showIndex && <span className="line-sidebar__index">{String(index + 1).padStart(2, '0')}</span>}
-              <span className="line-sidebar__text">{label}</span>
-            </span>
-          </li>
-        ))}
+        {items.map((label, index) => {
+          const isEditing = editingIndex === index;
+          return (
+            <li
+              key={`${label}-${index}`}
+              ref={el => {
+                itemRefs.current[index] = el;
+              }}
+              className={`line-sidebar__item ${isEditing ? 'line-sidebar__item--editing' : ''}`}
+              aria-current={activeIndex === index ? 'true' : undefined}
+              onClick={() => handleClick(index, label)}
+              style={isEditing ? { '--max-shift': '0px' } as React.CSSProperties : undefined}
+            >
+              {showMarker && <span className="line-sidebar__marker" aria-hidden="true" />}
+              
+              {isEditing ? (
+                <span className="line-sidebar__label">
+                  <input
+                    type="text"
+                    className="line-sidebar__input"
+                    value={editValue}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        void handleSave(index);
+                      } else if (e.key === 'Escape') {
+                        setEditingIndex(null);
+                      }
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    autoFocus
+                    onFocus={(e) => e.target.select()}
+                  />
+                  <span className="line-sidebar__edit-actions" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      className="line-sidebar__action-btn line-sidebar__action-btn--success"
+                      onClick={() => void handleSave(index)}
+                      title="Save"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      className="line-sidebar__action-btn line-sidebar__action-btn--cancel"
+                      onClick={() => setEditingIndex(null)}
+                      title="Cancel"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                      </svg>
+                    </button>
+                  </span>
+                </span>
+              ) : (
+                <span className="line-sidebar__label">
+                  <span className="line-sidebar__left">
+                    {showIndex && <span className="line-sidebar__index">{String(index + 1).padStart(2, '0')}</span>}
+                    <span className="line-sidebar__text">{label}</span>
+                  </span>
+                  {(onRenameItem || onDeleteItem) && (
+                    <span className="line-sidebar__actions" onClick={(e) => e.stopPropagation()}>
+                      {onRenameItem && (
+                        <button
+                          type="button"
+                          className="line-sidebar__action-btn line-sidebar__action-btn--edit"
+                          onClick={() => handleStartEdit(index, label)}
+                          title="Rename"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M12 20h9" />
+                            <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                          </svg>
+                        </button>
+                      )}
+                      {onDeleteItem && (
+                        <button
+                          type="button"
+                          className="line-sidebar__action-btn line-sidebar__action-btn--danger"
+                          onClick={() => void onDeleteItem(index)}
+                          title="Delete"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M3 6h18" />
+                            <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                            <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                          </svg>
+                        </button>
+                      )}
+                    </span>
+                  )}
+                </span>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </nav>
   );
