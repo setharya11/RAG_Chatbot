@@ -1,8 +1,6 @@
 # rag.py
 
-import os
-import re
-import base64
+import os,re,base64,json
 
 from dotenv import load_dotenv
 # pyrefly: ignore [missing-import]
@@ -164,13 +162,30 @@ def format_message_content(content_str):
     return content_list
 
 
-def ask_llm(query, context, history=None):
+def ask_llm(query, context, history=None, attachments=None):
     mode = detect_mode(query)
 
     if history is None:
         history = []
 
     system_prompt = get_prompt(mode)
+
+    query_lower = query.lower().strip().rstrip(".?!")
+    solve_paper_phrases = ["answer these questions", "solve this paper", "give answers", "answer all", "solve paper", "solve the paper"]
+    is_solve_paper = any(phrase in query_lower for phrase in solve_paper_phrases)
+
+    instruction = """Answer the current user question using ONLY facts supported by
+<PROVIDED_CONTEXT>."""
+    if attachments:
+        if is_solve_paper:
+            instruction = """The user has uploaded a History document (such as a question paper or worksheet) and wants you to solve it.
+Your task is to:
+1. Carefully detect all the questions present in the <PROVIDED_CONTEXT> extracted from the uploaded document.
+2. Answer each question sequentially and completely using clear, numbered formatting (e.g., '1. Question: ... \nAnswer: ...').
+3. Utilize the historical details in the retrieved context to provide accurate, high-quality, exam-oriented responses.
+Do not ask the user to specify a question number. Answer all detected questions sequentially."""
+        else:
+            instruction = """Answer the current user question (e.g. solve or answer the questions from the document) using your historical expertise and the context provided in <PROVIDED_CONTEXT>."""
 
     messages = [
         {
@@ -192,28 +207,29 @@ RETRIEVED TEXTBOOK CONTEXT
 CURRENT ANSWER INSTRUCTION
 ==================================================
 
-Answer the current user question using ONLY facts supported by
-<PROVIDED_CONTEXT>.
+{instruction}
 
 Return only the final textbook answer.
 """
         }
     ]
 
-    # Process history messages to format text / image attachments
-    formatted_history = []
-    for msg in history:
-        formatted_history.append({
-            "role": msg["role"],
-            "content": format_message_content(msg["content"])
-        })
-    messages.extend(formatted_history)
+    # For uploaded document analysis, send ONLY System Prompt, Context, and current Query
+    # Omit conversation history to prevent old logs/warnings/incorrect answers from polluting
+    if not attachments:
+        formatted_history = []
+        for msg in history:
+            formatted_history.append({
+                "role": msg["role"],
+                "content": format_message_content(msg["content"])
+            })
+        messages.extend(formatted_history)
 
     # Process current user query
     messages.append(
         {
             "role": "user",
-            "content": format_message_content(query),
+            "content": format_message_content(query)
         }
     )
 
@@ -243,9 +259,12 @@ Return only the final textbook answer.
             "Sorry, I couldn't generate a response right now.",
             mode,
         )
-def process_retrieved_context(chunks_with_scores):
+def process_retrieved_context(chunks_with_scores, skip_score_filter=False, limit=5):
     # 1. Filter by score (distance < 0.58)
-    filtered = [item for item in chunks_with_scores if item[1] < 0.58]
+    if skip_score_filter:
+        filtered = chunks_with_scores
+    else:
+        filtered = [item for item in chunks_with_scores if item[1] < 0.58]
     
     # 2. Deduplicate
     seen_text = set()
@@ -275,39 +294,217 @@ def process_retrieved_context(chunks_with_scores):
     for header, bodies in grouped_bodies.items():
         merged.append(f"{header}\n\n" + "\n... ".join(bodies))
         
-    # 4. Return top 4-6 chunks (limit to 5)
-    return merged[:5]
+    # 4. Return top chunks
+    if limit is None:
+        return merged
+    return merged[:limit]
+
+
+def get_session_attachments(db, session_id: int) -> list:
+    from src.models.chat import Message
+    import json
+    import re
+    from config.environment import MEDIA_PATH
+    
+    attachments = []
+    seen_ids = set()
+    
+    if not session_id:
+        return attachments
+        
+    messages = db.query(Message).filter(
+        Message.session_id == session_id,
+        Message.role == "user"
+    ).all()
+    
+    pattern = r"\n\n\[ATTACHMENTS:\s*(.*?)\]$"
+    for msg in messages:
+        match = re.search(pattern, msg.content)
+        if match:
+            try:
+                atts = json.loads(match.group(1))
+                for att in atts:
+                    fid = att.get("file_id")
+                    if fid and fid not in seen_ids:
+                        # Resolve path of the attachment
+                        local_path = att.get("local_path")
+                        filename = att.get("filename")
+                        
+                        path_to_check = None
+                        if local_path:
+                            clean_path = local_path.lstrip("/")
+                            if clean_path.startswith("media/"):
+                                clean_path = clean_path[6:]
+                            resolved_media_path = os.path.join(MEDIA_PATH, clean_path)
+                            if os.path.exists(resolved_media_path):
+                                path_to_check = resolved_media_path
+                                
+                        if not path_to_check:
+                            pdf_dir = f"chatbot/data/uploads/{session_id}"
+                            check_path = os.path.join(pdf_dir, filename)
+                            if os.path.exists(check_path):
+                                path_to_check = check_path
+                            else:
+                                check_path_alt = os.path.join("chatbot/data/pdfs", filename)
+                                if os.path.exists(check_path_alt):
+                                    path_to_check = check_path_alt
+                                    
+                        # Check if it was previously classified as non-History
+                        if path_to_check:
+                            meta_path = f"{path_to_check}.meta.json"
+                            if os.path.exists(meta_path):
+                                with open(meta_path, "r", encoding="utf-8") as f:
+                                    meta_data = json.load(f)
+                                if not meta_data.get("is_history", True):
+                                    # Skip non-History attachments from previous turns
+                                    continue
+                                    
+                        seen_ids.add(fid)
+                        attachments.append(att)
+            except Exception as e:
+                print("Error parsing session attachments:", e)
+                
+    return attachments
 
 
 def get_rag_answer(query, db, session_id, attachments=None):
     query_embedding = generate_embedding(query)
 
-    # Resolve search constraints based on user query attachments
+    # Resolve search constraints based on user query attachments or session history
+    resolved_attachments = attachments
+    if not resolved_attachments and session_id:
+        resolved_attachments = get_session_attachments(db, session_id)
+        
+    # Domain-aware validation for resolved attachments
+    if resolved_attachments:
+        from src.routes.chat.router import DocumentPipelineError
+        for att in resolved_attachments:
+            path_to_check = None
+            if isinstance(att, dict):
+                local_path = att.get("local_path")
+                filename = att.get("filename")
+                mime_type = att.get("mime_type") or ""
+            else:
+                local_path = att.local_path
+                filename = att.filename
+                mime_type = att.mime_type or ""
+                
+            # Resolve path under MEDIA_PATH if it is a media URL
+            if local_path:
+                clean_path = local_path.lstrip("/")
+                if clean_path.startswith("media/"):
+                    clean_path = clean_path[6:]
+                resolved_media_path = os.path.join(MEDIA_PATH, clean_path)
+                if os.path.exists(resolved_media_path):
+                    local_path = resolved_media_path
+                    
+            if local_path and os.path.exists(local_path):
+                path_to_check = local_path
+            else:
+                pdf_dir = f"chatbot/data/uploads/{session_id}"
+                check_path = os.path.join(pdf_dir, filename)
+                if os.path.exists(check_path):
+                    path_to_check = check_path
+                else:
+                    check_path_alt = os.path.join("chatbot/data/pdfs", filename)
+                    if os.path.exists(check_path_alt):
+                        path_to_check = check_path_alt
+                        
+            if path_to_check:
+                meta_path = f"{path_to_check}.meta.json"
+                if os.path.exists(meta_path):
+                    with open(meta_path, "r", encoding="utf-8") as f:
+                        meta_data = json.load(f)
+                    if not meta_data.get("is_history", True):
+                        if attachments is not None:
+                            raise DocumentPipelineError(meta_data.get("validation_message"))
+                        else:
+                            continue
+                else:
+                    # Dynamically run extraction and validation
+                    if not os.path.exists(path_to_check):
+                        if attachments is not None:
+                            raise DocumentPipelineError("I couldn't access the uploaded document. Please upload it again.")
+                        else:
+                            continue
+                    try:
+                        from chatbot.media_processor import extract_text_from_file
+                        text = extract_text_from_file(path_to_check)
+                    except Exception:
+                        if attachments is not None:
+                            raise DocumentPipelineError("I couldn't extract readable text from the uploaded document.")
+                        else:
+                            continue
+                    if not text or not text.strip():
+                        if attachments is not None:
+                            raise DocumentPipelineError("I couldn't extract readable text from the uploaded document.")
+                        else:
+                            continue
+                    
+                    from chatbot.domain_classifier import validate_attachment_domain
+                    validation = validate_attachment_domain(text, path_to_check, mime_type)
+                    if not validation.get("is_history", True):
+                        if attachments is not None:
+                            raise DocumentPipelineError(validation.get("validation_message"))
+                        else:
+                            continue
+
     allowed_sources = None
     exclude_user_uploads = False
     
-    if attachments:
-        allowed_sources = [f"session_{session_id}_{att.filename}" for att in attachments]
+    if resolved_attachments:
+        allowed_sources = []
+        for att in resolved_attachments:
+            if isinstance(att, dict):
+                allowed_sources.append(att.get("file_id") or f"session_{session_id}_{att.get('filename')}")
+            else:
+                allowed_sources.append(att.file_id or f"session_{session_id}_{att.filename}")
+        top_k = 60
+        limit = None
     else:
         exclude_user_uploads = True
+        top_k = 12
+        limit = 5
 
-    # Search top 12 chunks to extract a rich candidate pool
-    results_with_scores = search_chunks_with_scores(
-        query_embedding.tolist(),
-        top_k=12,
-        allowed_sources=allowed_sources,
-        exclude_user_uploads=exclude_user_uploads
-    )
+    # 9. Retrieval Priority: Uploaded document temporary index first, then fallback to History DB
+    results_with_scores = []
+    if allowed_sources:
+        results_with_scores = search_chunks_with_scores(
+            query_embedding.tolist(),
+            top_k=top_k,
+            allowed_sources=allowed_sources,
+            exclude_user_uploads=False,
+            source_type='upload',
+            session_id=session_id
+        )
+        
+    # If no chunks were retrieved or no uploaded documents exist, fall back to permanent textbook KB
+    if not results_with_scores:
+        results_with_scores = search_chunks_with_scores(
+            query_embedding.tolist(),
+            top_k=12,
+            allowed_sources=None,
+            exclude_user_uploads=True,
+            source_type='textbook',
+            session_id=0
+        )
+
+    # Step 14. Required logging: Retrieved Chunks & Sending Context to LLM
+    print("========================================")
+    print("Retrieved Chunks:")
+    for content, score in results_with_scores[:5]:
+        header = content.split("\n\n")[0] if "\n\n" in content else "Chunk"
+        print(f"- Source: {header} | Score (Distance): {score:.4f}")
+    print("========================================")
+    print("Sending Context to LLM")
+    print("========================================")
 
     # Filter, deduplicate, merge, and slice candidate context
-    processed_chunks = process_retrieved_context(results_with_scores)
-
-    # DEBUG: Print processed textbook context blocks
-    print("\n===== PROCESSED CONTEXT BLOCKS =====")
-    for index, result in enumerate(processed_chunks, start=1):
-        print(f"\nBLOCK {index}:")
-        print(result)
-    print("\n===================================\n")
+    processed_chunks = process_retrieved_context(
+        results_with_scores,
+        skip_score_filter=(allowed_sources is not None),
+        limit=limit
+    )
 
     context = build_context(processed_chunks)
 
@@ -320,7 +517,8 @@ def get_rag_answer(query, db, session_id, attachments=None):
     answer, mode = ask_llm(
         query=query,
         context=context,
-        history=history
+        history=history,
+        attachments=resolved_attachments
     )
 
     return answer

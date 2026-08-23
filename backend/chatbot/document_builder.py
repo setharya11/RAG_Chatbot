@@ -1,10 +1,9 @@
-import os
-import re
+import os, re
 
 # pyrefly: ignore [missing-import]
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from settings import RAW_DATA_PATH,CHUNK_DATA_PATH,CHUNK_SIZE,CHUNK_OVERLAP
+from settings import RAW_DATA_PATH, CHUNK_DATA_PATH, CHUNK_SIZE, CHUNK_OVERLAP
 
 
 def clean_text(text: str) -> str:
@@ -86,8 +85,7 @@ def chunk_text(text: str) -> list[str]:
     Split textbook text into semantically cleaner chunks.
     """
 
-    if not text:
-        return []
+    if not text: return []
 
     splitter = create_text_splitter()
 
@@ -130,8 +128,7 @@ def process_txt_file(file_path: str) -> list[str]:
     for chunk in chunks:
         normalized_chunk = chunk.lower().strip()
 
-        if normalized_chunk in seen:
-            continue
+        if normalized_chunk in seen: continue
 
         seen.add(normalized_chunk)
         unique_chunks.append(chunk)
@@ -140,19 +137,10 @@ def process_txt_file(file_path: str) -> list[str]:
 
 
 def save_chunks(chunks: list[str]) -> None:
-    """
-    Save generated textbook chunks.
-    """
 
-    os.makedirs(
-        CHUNK_DATA_PATH,
-        exist_ok=True,
-    )
+    os.makedirs(CHUNK_DATA_PATH,exist_ok=True,)
 
-    output_path = os.path.join(
-        CHUNK_DATA_PATH,
-        "chunks.txt",
-    )
+    output_path = os.path.join(CHUNK_DATA_PATH,"chunks.txt",)
 
     with open(
         output_path,
@@ -184,17 +172,11 @@ def main():
 
         chunks = process_txt_file(file_path)
 
-        print(
-            f"Created {len(chunks)} chunks "
-            f"from {file_name}"
-        )
+        print(f"Created {len(chunks)} chunks from {file_name}")
 
         all_chunks.extend(chunks)
 
-    print(
-        f"\nTotal chunks created: "
-        f"{len(all_chunks)}"
-    )
+    print(f"\nTotal chunks created: {len(all_chunks)}")
 
     save_chunks(all_chunks)
 

@@ -1,5 +1,6 @@
 import os
 
+# pyrefly: ignore [missing-import]
 from pypdf import PdfReader
 
 from settings import PDF_DATA_PATH, RAW_DATA_PATH

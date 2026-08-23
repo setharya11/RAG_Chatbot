@@ -15,6 +15,8 @@ type ChatAttachment = {
   filename: string;
   mime_type: string;
   file_id: string;
+  local_path?: string;
+  size?: number;
 };
 
 type ChatMessage = {
@@ -70,6 +72,19 @@ export default function DashboardPage() {
   }[]>([]);
   const [uploadingStatus, setUploadingStatus] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
+  const [reactions, setReactions] = useState<Record<string, "like" | "dislike" | null>>({});
+  const [activeViewFile, setActiveViewFile] = useState<ChatAttachment | null>(null);
+  const [viewFileText, setViewFileText] = useState<string | null>(null);
+  const [viewFileLoading, setViewFileLoading] = useState(false);
+
+  function handleToggleReaction(messageId: string, type: "like" | "dislike") {
+    setReactions((prev) => ({
+      ...prev,
+      [messageId]: prev[messageId] === type ? null : type
+    }));
+  }
 
   useEffect(() => {
     return () => {
@@ -226,6 +241,112 @@ export default function DashboardPage() {
   }, [urlSessionId, currentSessionId]);
 
 
+  async function handleEditMessage(messageId: string, newContent: string) {
+    if (loading || !newContent.trim()) return;
+    setLoading(true);
+    setUploadingStatus("Searching history...");
+    
+    try {
+      const res = await fetch(`${API_BASE}/chats/messages/${messageId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ content: newContent }),
+      });
+      
+      if (!res.ok) throw new Error("Failed to edit message");
+      const data = await res.json();
+      
+      setMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === messageId);
+        if (idx === -1) return prev;
+        
+        // Update user message text
+        const updatedUser = { ...prev[idx], text: newContent };
+        
+        // Keep messages up to edited message, and append assistant reply
+        return prev.slice(0, idx).concat(updatedUser, {
+          id: String(data.assistant_message_id || `a-${crypto.randomUUID()}`),
+          role: "assistant",
+          text: data.assistant_message || "No response from backend"
+        });
+      });
+      
+      setEditingMessageId(null);
+      setEditText("");
+    } catch (err) {
+      console.error(err);
+      alert("Could not update message");
+    } finally {
+      setLoading(false);
+      setUploadingStatus(null);
+    }
+  }
+
+  async function handleRetryMessage(messageId: string) {
+    if (loading) return;
+    setLoading(true);
+    setUploadingStatus("Retrieving context...");
+    
+    try {
+      const res = await fetch(`${API_BASE}/chats/messages/${messageId}/retry`, {
+        method: "POST",
+      });
+      
+      if (!res.ok) throw new Error("Failed to retry message");
+      const data = await res.json();
+      
+      setMessages((prev) => {
+        return prev.map((m) => {
+          if (m.id === messageId) {
+            return {
+              ...m,
+              text: data.assistant_message || "No response from backend"
+            };
+          }
+          return m;
+        });
+      });
+    } catch (err) {
+      console.error(err);
+      alert("Could not regenerate response");
+    } finally {
+      setLoading(false);
+      setUploadingStatus(null);
+    }
+  }
+
+  function handleCopyMessage(text: string) {
+    void navigator.clipboard.writeText(text);
+    alert("Copied to clipboard!");
+  }
+
+  async function handleOpenDocumentViewer(att: ChatAttachment, sessionId: number | string | null) {
+    setActiveViewFile(att);
+    setViewFileText("");
+    setViewFileLoading(true);
+    
+    const sId = sessionId || currentSessionId || urlSessionId || 0;
+    
+    try {
+      const res = await fetch(`${API_BASE}/chats/session/${sId}/file/${encodeURIComponent(att.filename)}/text`);
+      if (!res.ok) throw new Error("Failed to load text");
+      const data = await res.json();
+      if (data.success) {
+        setViewFileText(data.text || "Document text is empty.");
+      } else {
+        setViewFileText("Failed to retrieve text content.");
+      }
+    } catch (err: any) {
+      console.error(err);
+      setViewFileText("Could not load document content. Try downloading the file instead.");
+    } finally {
+      setViewFileLoading(false);
+    }
+  }
+
+
   async function sendQuestion(e?: React.FormEvent) {
     if (e) e.preventDefault();
 
@@ -234,6 +355,32 @@ export default function DashboardPage() {
 
     setLoading(true);
     setInput("");
+
+    const filesToUpload = [...attachedFiles];
+    const previewsToClear = [...attachedPreviews];
+
+    // Create temporary attachments list to display immediately in the chat bubble
+    const tempAttachments = previewsToClear.map((preview) => ({
+      filename: preview.name,
+      mime_type: preview.type === "image" ? "image/png" : "application/octet-stream",
+      file_id: preview.id,
+      size: filesToUpload.find((f) => f.name === preview.name)?.size || 0
+    }));
+
+    const userMsgId = `u-${crypto.randomUUID()}`;
+    const userMsg: ChatMessage = {
+      id: userMsgId,
+      role: "user",
+      text: q || (tempAttachments.length > 0 ? `Sent ${tempAttachments.length} attachment(s)` : ""),
+      attachments: tempAttachments,
+    };
+
+    // Add user message to UI immediately
+    setMessages((prev) => [...prev, userMsg]);
+
+    // Clear composer box and uploads list instantly to remove latency
+    setAttachedFiles([]);
+    setAttachedPreviews([]);
 
     let uploadErrors: string[] = [];
     let activeSessionId = urlSessionId && urlSessionId !== "new"
@@ -244,7 +391,7 @@ export default function DashboardPage() {
     const currentUserId = userSnapshot?.user_id || 1;
 
     // 1. Initialize chat session if new and files are attached
-    if (!activeSessionId && attachedFiles.length > 0) {
+    if (!activeSessionId && filesToUpload.length > 0) {
       setUploadingStatus("Initializing chat...");
       try {
         const initRes = await fetch(`${API_BASE}/chats/session/create`, {
@@ -274,13 +421,13 @@ export default function DashboardPage() {
       }
     }
 
-    const attachmentPayloads: { filename: string; mime_type: string; file_id: string }[] = [];
+    const attachmentPayloads: ChatAttachment[] = [];
 
     // 2. Upload attachments sequentially
     try {
-      if (attachedFiles.length > 0) {
+      if (filesToUpload.length > 0) {
         setUploadingStatus("Uploading files...");
-        for (const file of attachedFiles) {
+        for (const file of filesToUpload) {
           const isImage = file.type.startsWith("image/") || file.name.toLowerCase().endsWith(".webp");
           
           try {
@@ -304,7 +451,9 @@ export default function DashboardPage() {
               attachmentPayloads.push({
                 filename: file.name,
                 mime_type: file.type || "application/octet-stream",
-                file_id: data.file_id || `session_${activeSessionId}_${file.name}`
+                file_id: data.file_id || `session_${activeSessionId}_${file.name}`,
+                local_path: data.local_path || "",
+                size: data.size || file.size
               });
             } else {
               setUploadingStatus(`Uploading image: ${file.name}...`);
@@ -318,7 +467,9 @@ export default function DashboardPage() {
                 attachmentPayloads.push({
                   filename: file.name,
                   mime_type: file.type || "image/png",
-                  file_id: data.url
+                  file_id: data.url,
+                  local_path: data.url,
+                  size: file.size
                 });
               } else {
                 throw new Error(`Could not upload image: ${file.name}`);
@@ -330,13 +481,11 @@ export default function DashboardPage() {
           }
         }
         
-        attachedPreviews.forEach((preview) => {
+        previewsToClear.forEach((preview) => {
           if (preview.type === "image" && preview.url) {
             URL.revokeObjectURL(preview.url);
           }
         });
-        setAttachedFiles([]);
-        setAttachedPreviews([]);
         setUploadingStatus(null);
       }
 
@@ -345,15 +494,6 @@ export default function DashboardPage() {
       }
 
       const promptText = q || (attachmentPayloads.length > 0 ? `Sent ${attachmentPayloads.length} attachment(s)` : "");
-
-      const userMsg: ChatMessage = {
-        id: `u-${crypto.randomUUID()}`,
-        role: "user",
-        text: promptText,
-        attachments: attachmentPayloads,
-      };
-
-      setMessages((prev) => [...prev, userMsg]);
 
       // 3. Submit instruction and attachment mappings separately
       const res = await fetch(`${API_BASE}/chats/send`, {
@@ -382,13 +522,19 @@ export default function DashboardPage() {
         }
       }
 
-      const reply: ChatMessage = {
-        id: `a-${crypto.randomUUID()}`,
-        role: "assistant",
-        text: data.assistant_message || "No response from backend",
-      };
-
-      setMessages((prev) => [...prev, reply]);
+      // Replace temporary userMsgId with the actual database ID, and append assistant reply with its actual database ID
+      setMessages((prev) => {
+        return prev.map((m) => {
+          if (m.id === userMsgId && data.user_message_id) {
+            return { ...m, id: String(data.user_message_id) };
+          }
+          return m;
+        }).concat({
+          id: String(data.assistant_message_id || `a-${crypto.randomUUID()}`),
+          role: "assistant",
+          text: data.assistant_message || "No response from backend"
+        });
+      });
     } catch (error) {
       setMessages((prev) => [
         ...prev,
@@ -602,22 +748,156 @@ export default function DashboardPage() {
                         : "chat-bubble chat-bubble--assistant"
                     }
                   >
-                    {m.role === "user" && m.attachments && m.attachments.length > 0 && (
-                      <div className="chat-bubble__attachments-row" style={{ display: "flex", flexWrap: "wrap", gap: "10px", marginBottom: "8px", justifyContent: "flex-end" }}>
-                        {m.attachments.map((att) => (
-                          <div key={att.file_id} className="chat-bubble__attachment-card" style={{ display: "inline-flex", background: "rgba(255, 255, 255, 0.05)", padding: "8px 12px", borderRadius: "10px", border: "1px solid rgba(255, 255, 255, 0.08)", gap: "10px", alignItems: "center", minWidth: "150px" }}>
-                            {renderFileIcon(att.filename)}
-                            <div style={{ display: "flex", flexDirection: "column" }}>
-                              <span style={{ fontSize: "0.85rem", color: "var(--text-soft)", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "160px" }}>{att.filename}</span>
-                              <span style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.4)" }}>{getFileTypeLabel(att.filename)}</span>
-                            </div>
-                          </div>
-                        ))}
+                    {editingMessageId === m.id ? (
+                      <div style={{ display: "flex", flexDirection: "column", width: "100%", gap: "10px", minWidth: "300px" }}>
+                        <textarea
+                          value={editText}
+                          onChange={(e) => setEditText(e.target.value)}
+                          style={{
+                            width: "100%",
+                            minHeight: "100px",
+                            background: "rgba(255,255,255,0.06)",
+                            border: "1px solid rgba(255,255,255,0.15)",
+                            borderRadius: "10px",
+                            color: "var(--text-main)",
+                            padding: "10px",
+                            fontFamily: "inherit",
+                            fontSize: "0.95rem",
+                            resize: "vertical",
+                            outline: "none"
+                          }}
+                        />
+                        <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px" }}>
+                          <button
+                            onClick={() => {
+                              setEditingMessageId(null);
+                              setEditText("");
+                            }}
+                            style={{
+                              padding: "6px 14px",
+                              background: "rgba(255,255,255,0.08)",
+                              border: "1px solid rgba(255,255,255,0.1)",
+                              borderRadius: "8px",
+                              color: "var(--text-soft)",
+                              fontSize: "0.85rem",
+                              cursor: "pointer",
+                              transition: "all 0.2s"
+                            }}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            onClick={() => void handleEditMessage(m.id, editText)}
+                            style={{
+                              padding: "6px 14px",
+                              background: "var(--accent)",
+                              border: "none",
+                              borderRadius: "8px",
+                              color: "#fff",
+                              fontSize: "0.85rem",
+                              fontWeight: 500,
+                              cursor: "pointer",
+                              transition: "all 0.2s"
+                            }}
+                          >
+                            Save
+                          </button>
+                        </div>
                       </div>
+                    ) : (
+                      <>
+                        {m.role === "user" && m.attachments && m.attachments.length > 0 && (
+                          <div className="chat-bubble__attachments-row" style={{ display: "flex", flexWrap: "wrap", gap: "10px", marginBottom: "8px", justifyContent: "flex-end" }}>
+                            {m.attachments.map((att) => (
+                              <div 
+                                key={att.file_id} 
+                                className="chat-bubble__attachment-card" 
+                                onClick={() => void handleOpenDocumentViewer(att, urlSessionId)}
+                                style={{ 
+                                  display: "inline-flex", 
+                                  background: "rgba(255, 255, 255, 0.05)", 
+                                  padding: "8px 12px", 
+                                  borderRadius: "10px", 
+                                  border: "1px solid rgba(255, 255, 255, 0.08)", 
+                                  gap: "10px", 
+                                  alignItems: "center", 
+                                  minWidth: "150px",
+                                  cursor: "pointer",
+                                  transition: "background 0.2s, border-color 0.2s"
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.background = "rgba(255, 255, 255, 0.1)";
+                                  e.currentTarget.style.borderColor = "var(--accent)";
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.background = "rgba(255, 255, 255, 0.05)";
+                                  e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.08)";
+                                }}
+                              >
+                                {renderFileIcon(att.filename)}
+                                <div style={{ display: "flex", flexDirection: "column" }}>
+                                  <span style={{ fontSize: "0.85rem", color: "var(--text-soft)", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "160px" }}>{att.filename}</span>
+                                  <span style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.4)" }}>{getFileTypeLabel(att.filename)}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <div className="chat-bubble__text markdown-content">
+                          {renderMessageText(m.text)}
+                        </div>
+                        <div className="chat-bubble__actions">
+                          {m.role === "user" ? (
+                            <button
+                              onClick={() => {
+                                setEditingMessageId(m.id);
+                                setEditText(m.text);
+                              }}
+                              disabled={loading}
+                              title="Edit message"
+                              style={{ background: "none", border: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", display: "flex", alignItems: "center", padding: "4px" }}
+                            >
+                              <span style={{ fontSize: "0.85rem", marginRight: "4px" }}>✏️</span>
+                              <span style={{ fontSize: "0.78rem" }}>Edit</span>
+                            </button>
+                          ) : (
+                            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                              <button
+                                onClick={() => void handleRetryMessage(m.id)}
+                                disabled={loading}
+                                title="Retry regeneration"
+                                style={{ background: "none", border: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", display: "flex", alignItems: "center", padding: "2px" }}
+                              >
+                                <span style={{ fontSize: "0.85rem", marginRight: "4px" }}>↻</span>
+                                <span style={{ fontSize: "0.78rem" }}>Retry</span>
+                              </button>
+                              <button
+                                onClick={() => handleCopyMessage(m.text)}
+                                title="Copy content"
+                                style={{ background: "none", border: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", display: "flex", alignItems: "center", padding: "2px" }}
+                              >
+                                <span style={{ fontSize: "0.85rem", marginRight: "4px" }}>📋</span>
+                                <span style={{ fontSize: "0.78rem" }}>Copy</span>
+                              </button>
+                              <button
+                                onClick={() => handleToggleReaction(m.id, "like")}
+                                title="Like"
+                                style={{ background: "none", border: "none", color: reactions[m.id] === "like" ? "var(--accent)" : "rgba(255,255,255,0.6)", cursor: "pointer", display: "flex", alignItems: "center", padding: "2px" }}
+                              >
+                                <span style={{ fontSize: "0.85rem" }}>👍</span>
+                              </button>
+                              <button
+                                onClick={() => handleToggleReaction(m.id, "dislike")}
+                                title="Dislike"
+                                style={{ background: "none", border: "none", color: reactions[m.id] === "dislike" ? "#ef4444" : "rgba(255,255,255,0.6)", cursor: "pointer", display: "flex", alignItems: "center", padding: "2px" }}
+                              >
+                                <span style={{ fontSize: "0.85rem" }}>👎</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </>
                     )}
-                    <div className="chat-bubble__text markdown-content">
-                      {renderMessageText(m.text)}
-                    </div>
                   </motion.li>
                 ))}
 
@@ -755,6 +1035,121 @@ export default function DashboardPage() {
           )}
         </div>
       </div>
+      
+      {/* DOCUMENT VIEWER DRAWER PANEL */}
+      {activeViewFile && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", justifyContent: "flex-end", background: "rgba(0,0,0,0.5)", backdropFilter: "blur(4px)" }} onClick={() => setActiveViewFile(null)}>
+          <motion.div
+            initial={{ x: "100%" }}
+            animate={{ x: 0 }}
+            exit={{ x: "100%" }}
+            transition={{ type: "spring", damping: 25, stiffness: 200 }}
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "480px",
+              height: "100%",
+              background: "rgba(18, 20, 24, 0.95)",
+              borderLeft: "1px solid rgba(255, 255, 255, 0.08)",
+              boxShadow: "-10px 0 30px rgba(0,0,0,0.6)",
+              display: "flex",
+              flexDirection: "column",
+              padding: "24px"
+            }}
+          >
+            {/* Header */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "20px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px", overflow: "hidden" }}>
+                <div style={{ width: "40px", height: "40px", borderRadius: "8px", background: "rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  {renderFileIcon(activeViewFile.filename, 24)}
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
+                  <span style={{ fontSize: "1.05rem", fontWeight: 600, color: "var(--text-main)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {activeViewFile.filename}
+                  </span>
+                  <span style={{ fontSize: "0.8rem", color: "var(--text-soft)" }}>
+                    {getFileTypeLabel(activeViewFile.filename)} {activeViewFile.size ? `• ${(activeViewFile.size / 1024 / 1024).toFixed(2)} MB` : ""}
+                  </span>
+                </div>
+              </div>
+              
+              <button
+                onClick={() => setActiveViewFile(null)}
+                style={{
+                  width: "32px",
+                  height: "32px",
+                  borderRadius: "50%",
+                  border: "none",
+                  background: "rgba(255,255,255,0.05)",
+                  color: "var(--text-soft)",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  transition: "background 0.2s"
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = "rgba(255,255,255,0.1)"}
+                onMouseLeave={(e) => e.currentTarget.style.background = "rgba(255,255,255,0.05)"}
+              >
+                ✕
+              </button>
+            </div>
+            
+            {/* Quick Actions */}
+            <div style={{ display: "flex", gap: "10px", marginBottom: "20px" }}>
+              <a
+                href={`${API_BASE}/chats/session/${urlSessionId || currentSessionId || 0}/file/${encodeURIComponent(activeViewFile.filename)}`}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  flex: 1,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "8px",
+                  padding: "10px",
+                  borderRadius: "8px",
+                  background: "var(--accent)",
+                  color: "#fff",
+                  fontSize: "0.9rem",
+                  fontWeight: 500,
+                  textDecoration: "none",
+                  transition: "opacity 0.2s"
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.opacity = "0.9"}
+                onMouseLeave={(e) => e.currentTarget.style.opacity = "1"}
+              >
+                <span>📥</span> Open / Download File
+              </a>
+            </div>
+            
+            {/* Extracted Content Viewer */}
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+              <span style={{ fontSize: "0.85rem", textTransform: "uppercase", fontWeight: 700, color: "rgba(255,255,255,0.4)", letterSpacing: "0.08em", marginBottom: "10px" }}>
+                Extracted Content
+              </span>
+              
+              <div style={{ flex: 1, overflowY: "auto", background: "rgba(0,0,0,0.2)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: "10px", padding: "16px", minHeight: 0 }}>
+                {viewFileLoading ? (
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "12px", color: "var(--text-soft)" }}>
+                    <div className="viewer-spinner" style={{ width: "30px", height: "30px", border: "3px solid rgba(255,255,255,0.1)", borderTopColor: "var(--accent)", borderRadius: "50%", animation: "viewer-spin 1s linear infinite" }} />
+                    <style>{`
+                      @keyframes viewer-spin {
+                        0% { transform: rotate(0deg); }
+                        100% { transform: rotate(360deg); }
+                      }
+                    `}</style>
+                    <span style={{ fontSize: "0.9rem" }}>Parsing content...</span>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: "0.92rem", lineHeight: "1.6", color: "var(--text-soft)", whiteSpace: "pre-wrap", fontFamily: "monospace" }}>
+                    {viewFileText || "No content extracted."}
+                  </div>
+                )}
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
     </PageTransition>
   );
 }

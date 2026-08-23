@@ -15,8 +15,25 @@ def extract_text_from_pdf(pdf_path):
 
     for page in reader.pages:
         page_text = page.extract_text()
-        if page_text:
+        if page_text and len(page_text.strip()) > 50:
             text += page_text + "\n"
+        else:
+            # Scanned page - extract images and run OCR
+            from PIL import Image
+            import io
+            import pytesseract
+            ocr_text = ""
+            try:
+                for img_file_object in page.images:
+                    image = Image.open(io.BytesIO(img_file_object.data))
+                    ocr_text += pytesseract.image_to_string(image) + "\n"
+            except Exception as e:
+                print("OCR PDF Page failed:", e)
+            
+            if ocr_text.strip():
+                text += ocr_text + "\n"
+            else:
+                text += (page_text or "") + "\n"
 
     return text
 

@@ -1,5 +1,5 @@
 # pyrefly: ignore [missing-import]
-from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime
+from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Boolean
 # pyrefly: ignore [missing-import]
 from sqlalchemy.sql import func
 # pyrefly: ignore [missing-import]
@@ -29,5 +29,10 @@ class Message(Base):
     role = Column(String(20), nullable=False)  # user / assistant
     content = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    edited_at = Column(DateTime(timezone=True), nullable=True)
+    is_edited = Column(Boolean, default=False, server_default="false")
+    retry_count = Column(Integer, default=0, server_default="0")
+    parent_message_id = Column(Integer, ForeignKey("messages.id", ondelete="SET NULL"), nullable=True)
+    version = Column(Integer, default=1, server_default="1")
 
     session = relationship("ChatSession", back_populates="messages")

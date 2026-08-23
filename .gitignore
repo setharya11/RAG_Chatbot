@@ -32,6 +32,8 @@ yarn-error.log*
 
 # RAG generated data
 backend/chatbot/data/chunks/
+backend/chatbot/data/cleaned/
+backend/chatbot/data/uploads/
 backend/chatbot/vector_store/
 
 # Raw datasets
@@ -39,5 +41,6 @@ backend/chatbot/data/raw/
 
 # Source PDFs / knowledge documents
 backend/chatbot/data/pdfs/
+
 
 

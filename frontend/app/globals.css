@@ -1679,6 +1679,43 @@ button.primary:disabled {
   color: var(--text-soft);
 }
 
+.chat-bubble {
+  position: relative;
+}
+
+.chat-bubble__actions {
+  opacity: 0.15;
+  transition: opacity 0.2s ease;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  padding-top: 6px;
+}
+
+.chat-bubble--user .chat-bubble__actions {
+  justify-content: flex-end;
+}
+
+.chat-bubble--assistant .chat-bubble__actions {
+  justify-content: flex-start;
+}
+
+.chat-bubble:hover .chat-bubble__actions {
+  opacity: 1;
+}
+
+.chat-bubble__actions button {
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.chat-bubble__actions button:hover {
+  color: #fff !important;
+  opacity: 1;
+}
+
 .chat-container {
   flex: 1;
   min-height: 0;

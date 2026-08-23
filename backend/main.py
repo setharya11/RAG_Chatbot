@@ -12,6 +12,24 @@ from shared import get_logger, log_error
 from src.routes.users.router import router as users_router
 from src.routes.chat.router import router as chat_router
 
+# Auto-migration script for new columns
+try:
+    from db.db_session import engine
+    from sqlalchemy import text
+    with engine.connect() as connection:
+        connection.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP WITH TIME ZONE;"))
+        connection.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_edited BOOLEAN DEFAULT FALSE;"))
+        connection.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0;"))
+        connection.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS parent_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL;"))
+        connection.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 1;"))
+        
+        # Add columns to document_chunks
+        connection.execute(text("ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS source_type VARCHAR(50) DEFAULT 'textbook';"))
+        connection.execute(text("ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS session_id INTEGER DEFAULT 0;"))
+        connection.commit()
+except Exception as e:
+    print("Database auto-migration warning:", e)
+
 logger = get_logger(__name__)
 
 app = FastAPI(title="RAG Chatbot API", version="0.1.0")

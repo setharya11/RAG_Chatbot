@@ -41,7 +41,7 @@ def get_connection():
     return conn
 
 
-def insert_chunk(content, embedding):
+def insert_chunk(content, embedding, source_type='textbook', session_id=0):
     conn = get_connection()
     cur = conn.cursor()
 
@@ -50,13 +50,17 @@ def insert_chunk(content, embedding):
             """
             INSERT INTO document_chunks (
                 content,
-                embedding
+                embedding,
+                source_type,
+                session_id
             )
-            VALUES (%s, %s)
+            VALUES (%s, %s, %s, %s)
             """,
             (
                 content,
                 embedding,
+                source_type,
+                session_id
             ),
         )
 
@@ -126,7 +130,7 @@ def search_chunks(query_embedding, top_k=5):
         conn.close()
 
 
-def search_chunks_with_scores(query_embedding, top_k=5, allowed_sources=None, exclude_user_uploads=False):
+def search_chunks_with_scores(query_embedding, top_k=5, allowed_sources=None, exclude_user_uploads=False, source_type=None, session_id=None):
     conn = get_connection()
     cur = conn.cursor()
 
@@ -138,6 +142,14 @@ def search_chunks_with_scores(query_embedding, top_k=5, allowed_sources=None, ex
         conditions = []
         params = [query_embedding]
         
+        if source_type:
+            conditions.append("source_type = %s")
+            params.append(source_type)
+            
+        if session_id is not None:
+            conditions.append("session_id = %s")
+            params.append(session_id)
+            
         if allowed_sources:
             or_conds = []
             for src in allowed_sources:
@@ -145,7 +157,7 @@ def search_chunks_with_scores(query_embedding, top_k=5, allowed_sources=None, ex
                 params.append(f"Source: {src}%")
             conditions.append("(" + " OR ".join(or_conds) + ")")
         elif exclude_user_uploads:
-            conditions.append("content NOT LIKE 'Source: session_%'")
+            conditions.append("source_type = 'textbook'")
             
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)

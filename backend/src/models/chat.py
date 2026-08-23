@@ -5,6 +5,7 @@ from sqlalchemy import (
     Text,
     ForeignKey,
     DateTime,
+    Boolean,
 )
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -69,6 +70,35 @@ class Message(Base):
     created_at = Column(
         DateTime(timezone=True),
         server_default=func.now(),
+    )
+
+    edited_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    is_edited = Column(
+        Boolean,
+        default=False,
+        server_default="false",
+    )
+
+    retry_count = Column(
+        Integer,
+        default=0,
+        server_default="0",
+    )
+
+    parent_message_id = Column(
+        Integer,
+        ForeignKey("messages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    version = Column(
+        Integer,
+        default=1,
+        server_default="1",
     )
 
     session = relationship(
